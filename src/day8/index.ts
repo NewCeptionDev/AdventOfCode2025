@@ -15,7 +15,8 @@ interface Position {
   x: number
   y: number
   z: number
-  alreadyIdentifiedClosest: Position[]
+  alreadyIdentifiedClosest?: Position[]
+  lastCalculatedClosest?: { distance: number; position: Position }
 }
 
 interface Node {
@@ -41,7 +42,7 @@ const parsePosition = (input: string): Position => {
     x,
     y,
     z,
-    alreadyIdentifiedClosest: [{ x, y, z, alreadyIdentifiedClosest: [] }],
+    alreadyIdentifiedClosest: [{ x, y, z }],
   }
 }
 
@@ -57,6 +58,7 @@ const getValueForAxis = (position: Position, axis: AXIS): number => {
 }
 
 const buildTree = (positions: Position[], depth: number): Node | Leaf => {
+  // Create Leaf node if only one position is left
   if (positions.length === 1) {
     return { value: positions[0] }
   }
@@ -67,6 +69,7 @@ const buildTree = (positions: Position[], depth: number): Node | Leaf => {
   const left = buildTree(sorted.slice(0, middle), depth + 1)
   const right = buildTree(sorted.slice(middle), depth + 1)
 
+  // Create Tree Node by using the middle value of all values on the axis and the trees build based on the left and right parts
   return { value: getValueForAxis(sorted[middle], axis), axis, left, right }
 }
 
@@ -85,6 +88,7 @@ const findNearestNeighbour = (
   if (isLeaf(tree)) {
     const distance = calculateDistance(tree.value, position)
 
+    // If the position is on the ignore list, return the current best
     if (ignoreList.find((p) => p.x === tree.value.x && p.y === tree.value.y)) {
       return currentBest
     }
@@ -96,55 +100,28 @@ const findNearestNeighbour = (
 
   const compareValue = getValueForAxis(position, tree.axis)
 
-  if (compareValue < tree.value) {
+  // Check the nearest neighbour based on the closer tree branch
+  currentBest = findNearestNeighbour(
+    compareValue < tree.value ? tree.left : tree.right,
+    position,
+    currentBest,
+    ignoreList,
+  )
+
+  // If the opposite tree branch could be closer, also check it
+  if (
+    Math.abs(compareValue - tree.value) <=
+    Math.abs(getValueForAxis(position, tree.axis) - tree.value)
+  ) {
     currentBest = findNearestNeighbour(
-      tree.left,
+      compareValue < tree.value ? tree.right : tree.left,
       position,
       currentBest,
       ignoreList,
     )
-    if (
-      Math.abs(compareValue - tree.value) <=
-      Math.abs(getValueForAxis(position, tree.axis) - tree.value)
-    ) {
-      currentBest = findNearestNeighbour(
-        tree.right,
-        position,
-        currentBest,
-        ignoreList,
-      )
-    }
-  } else {
-    currentBest = findNearestNeighbour(
-      tree.right,
-      position,
-      currentBest,
-      ignoreList,
-    )
-    if (
-      Math.abs(compareValue - tree.value) <=
-      Math.abs(getValueForAxis(position, tree.axis) - tree.value)
-    ) {
-      currentBest = findNearestNeighbour(
-        tree.left,
-        position,
-        currentBest,
-        ignoreList,
-      )
-    }
   }
 
   return currentBest
-}
-
-const printTree = (tree: Node | Leaf, depth: number) => {
-  if (isLeaf(tree)) {
-    console.log(" ".repeat(depth * 2), tree.value)
-  } else {
-    printTree(tree.left, depth + 1)
-    console.log(" ".repeat(depth * 2), tree.value)
-    printTree(tree.right, depth + 1)
-  }
 }
 
 const findClosestPositions = (tree: Node | Leaf, positions: Position[]) => {
@@ -155,12 +132,25 @@ const findClosestPositions = (tree: Node | Leaf, positions: Position[]) => {
   }
 
   positions.forEach((pos) => {
-    const nearestPosition = findNearestNeighbour(
-      tree,
-      pos,
-      { distance: Number.MAX_SAFE_INTEGER, position: null },
-      pos.alreadyIdentifiedClosest,
-    )
+    let nearestPosition: { distance: number; position: Position }
+
+    // Use cached value if possible
+    if (pos.lastCalculatedClosest) {
+      nearestPosition = pos.lastCalculatedClosest
+    } else {
+      // Otherwise, calculate the nearest neighbour
+      nearestPosition = findNearestNeighbour(
+        tree,
+        pos,
+        { distance: Number.MAX_SAFE_INTEGER, position: null },
+        pos.alreadyIdentifiedClosest,
+      )
+      // Cache the result
+      pos.lastCalculatedClosest = {
+        distance: nearestPosition.distance,
+        position: nearestPosition.position,
+      }
+    }
 
     if (nearestPosition.distance < closestPair.distance) {
       closestPair = {
@@ -171,52 +161,69 @@ const findClosestPositions = (tree: Node | Leaf, positions: Position[]) => {
     }
   })
 
+  // Add the positions to the alreadyIdentifiedClosest list
+  closestPair.pos1.alreadyIdentifiedClosest.push(closestPair.pos2)
+  closestPair.pos2.alreadyIdentifiedClosest.push(closestPair.pos1)
+  // Clear the cache for the chosen positions as they will be part of their ignore list
+  closestPair.pos1.lastCalculatedClosest = null
+  closestPair.pos2.lastCalculatedClosest = null
+
   return closestPair
 }
 
-const goA = (input, rounds: number) => {
+const calculateCircuitsBasedOnClosestPair = (
+  circuits: Circuit[],
+  closestPair: { pos1: Position; pos2: Position },
+) => {
+  const circuitPos1 = circuits.find((circuit) =>
+    circuit.find(
+      (p) =>
+        p.x === closestPair.pos1.x &&
+        p.y === closestPair.pos1.y &&
+        p.z === closestPair.pos1.z,
+    ),
+  )
+  const circuitPos2 = circuits.find((circuit) =>
+    circuit.find(
+      (p) =>
+        p.x === closestPair.pos2.x &&
+        p.y === closestPair.pos2.y &&
+        p.z === closestPair.pos2.z,
+    ),
+  )
+
+  if (circuitPos1 === undefined && circuitPos2 === undefined) {
+    // Create new circuit if neither position is already part of a circuit
+    circuits.push([closestPair.pos1, closestPair.pos2])
+  } else if (circuitPos1 !== undefined && circuitPos2 === undefined) {
+    // Add position to existing circuit
+    circuitPos1.push(closestPair.pos2)
+  } else if (circuitPos2 !== undefined && circuitPos1 === undefined) {
+    // Add position to existing circuit
+    circuitPos2.push(closestPair.pos1)
+  } else if (
+    circuitPos1.some(
+      (p) =>
+        !circuitPos2.find((cp) => cp.x === p.x && cp.y === p.y && cp.z === p.z),
+    )
+  ) {
+    // Merge circuits
+    circuits.splice(circuits.indexOf(circuitPos1), 1)
+    circuitPos2.push(...circuitPos1)
+  }
+
+  return circuits
+}
+
+const goA = (input: string, rounds: number) => {
   const positions = splitToLines(input).map(parsePosition)
   const tree = buildTree(positions, 0)
   const circuits: Circuit[] = []
 
   for (let i = 0; i < rounds; i++) {
     const closestPair = findClosestPositions(tree, positions)
-    closestPair.pos1.alreadyIdentifiedClosest.push(closestPair.pos2)
-    closestPair.pos2.alreadyIdentifiedClosest.push(closestPair.pos1)
 
-    const circuitPos1 = circuits.find((circuit) =>
-      circuit.find(
-        (p) =>
-          p.x === closestPair.pos1.x &&
-          p.y === closestPair.pos1.y &&
-          p.z === closestPair.pos1.z,
-      ),
-    )
-    const circuitPos2 = circuits.find((circuit) =>
-      circuit.find(
-        (p) =>
-          p.x === closestPair.pos2.x &&
-          p.y === closestPair.pos2.y &&
-          p.z === closestPair.pos2.z,
-      ),
-    )
-    if (circuitPos1 === undefined && circuitPos2 === undefined) {
-      circuits.push([closestPair.pos1, closestPair.pos2])
-    } else if (circuitPos1 !== undefined && circuitPos2 === undefined) {
-      circuitPos1.push(closestPair.pos2)
-    } else if (circuitPos2 !== undefined && circuitPos1 === undefined) {
-      circuitPos2.push(closestPair.pos1)
-    } else if (
-      circuitPos1.some(
-        (p) =>
-          !circuitPos2.find(
-            (cp) => cp.x === p.x && cp.y === p.y && cp.z === p.z,
-          ),
-      )
-    ) {
-      circuits.splice(circuits.indexOf(circuitPos1), 1)
-      circuitPos2.push(...circuitPos1)
-    }
+    calculateCircuitsBasedOnClosestPair(circuits, closestPair)
   }
 
   return circuits
@@ -230,46 +237,12 @@ const goB = (input) => {
   const positions = splitToLines(input).map(parsePosition)
   const tree = buildTree(positions, 0)
   const circuits: Circuit[] = []
-  let result
+  let result: number
 
   while (!result) {
     const closestPair = findClosestPositions(tree, positions)
-    closestPair.pos1.alreadyIdentifiedClosest.push(closestPair.pos2)
-    closestPair.pos2.alreadyIdentifiedClosest.push(closestPair.pos1)
 
-    const circuitPos1 = circuits.find((circuit) =>
-      circuit.find(
-        (p) =>
-          p.x === closestPair.pos1.x &&
-          p.y === closestPair.pos1.y &&
-          p.z === closestPair.pos1.z,
-      ),
-    )
-    const circuitPos2 = circuits.find((circuit) =>
-      circuit.find(
-        (p) =>
-          p.x === closestPair.pos2.x &&
-          p.y === closestPair.pos2.y &&
-          p.z === closestPair.pos2.z,
-      ),
-    )
-    if (circuitPos1 === undefined && circuitPos2 === undefined) {
-      circuits.push([closestPair.pos1, closestPair.pos2])
-    } else if (circuitPos1 !== undefined && circuitPos2 === undefined) {
-      circuitPos1.push(closestPair.pos2)
-    } else if (circuitPos2 !== undefined && circuitPos1 === undefined) {
-      circuitPos2.push(closestPair.pos1)
-    } else if (
-      circuitPos1.some(
-        (p) =>
-          !circuitPos2.find(
-            (cp) => cp.x === p.x && cp.y === p.y && cp.z === p.z,
-          ),
-      )
-    ) {
-      circuits.splice(circuits.indexOf(circuitPos1), 1)
-      circuitPos2.push(...circuitPos1)
-    }
+    calculateCircuitsBasedOnClosestPair(circuits, closestPair)
 
     if (circuits.length === 1 && circuits[0].length === positions.length) {
       result = closestPair.pos1.x * closestPair.pos2.x
